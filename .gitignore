@@ -1,0 +1,33 @@
+# Environment variables — never commit secrets
+.env
+.env.*
+!example.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+vevn/
+venv/
+.venv/
+env/
+
+# Storage / runtime data
+pii_results.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
