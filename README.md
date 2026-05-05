@@ -1,3 +1,13 @@
+---
+title: PII Shield v2 — Live Detection Comparison
+emoji: 🛡
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # 🛡 PII Shield — Live Detection Comparison Tool
 
 A single-file FastAPI demo that runs **3 PII detection tools side-by-side** and compares:
