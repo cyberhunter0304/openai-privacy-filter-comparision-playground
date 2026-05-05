@@ -6,11 +6,11 @@ PII Detection Comparison Tool v2
 - Precision / Recall / F1 computation vs optional ground truth
 """
 
-import os, time, asyncio, httpx, json, uuid
+import os, time, asyncio, httpx, json, uuid, hashlib, hmac
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from pydantic import BaseModel
 import uvicorn
@@ -25,6 +25,19 @@ AZURE_OPENAI_KEY              = os.getenv("AZURE_OPENAI_KEY")
 AZURE_OPENAI_ENDPOINT         = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
 AZURE_OPENAI_DEPLOYMENT       = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 AZURE_OPENAI_API_VERSION      = os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+APP_PASSPHRASE                = os.getenv("APP_PASSPHRASE", "")  # empty = auth disabled (local dev)
+
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+def _expected_token() -> str:
+    """Derive a stable token from the passphrase using HMAC-SHA256."""
+    return hmac.new(APP_PASSPHRASE.encode(), b"pii-shield-token", hashlib.sha256).hexdigest()
+
+def _require_auth(x_app_token: Optional[str] = Header(default=None)):
+    """FastAPI dependency — raises 401 if passphrase is set and token is wrong."""
+    if not APP_PASSPHRASE:
+        return  # auth disabled in local dev
+    if x_app_token != _expected_token():
+        raise HTTPException(status_code=401, detail="Invalid or missing token")
 
 # ── Persistent store ──────────────────────────────────────────────────────────
 RESULTS_FILE = Path("pii_results.json")
@@ -343,6 +356,15 @@ app = FastAPI(title="PII Comparison v2")
 async def root():
     return HTMLResponse(Path(__file__).resolve().parent.joinpath("index.html").read_text(encoding="utf-8"))
 
+@app.post("/api/auth")
+async def auth(body: dict):
+    """Validate passphrase and return session token."""
+    if not APP_PASSPHRASE:
+        return {"ok": True, "token": ""}  # auth disabled
+    if body.get("passphrase") == APP_PASSPHRASE:
+        return {"ok": True, "token": _expected_token()}
+    raise HTTPException(status_code=401, detail="Wrong passphrase")
+
 @app.get("/api/health")
 async def health():
     store = load_store()
@@ -353,7 +375,7 @@ async def health():
         "total_runs_stored":       store.get("meta",{}).get("total_runs", 0),
     }
 
-@app.get("/api/warmup")
+@app.get("/api/warmup", dependencies=[Depends(_require_auth)])
 async def warmup():
     loop = asyncio.get_event_loop()
     await asyncio.gather(
@@ -362,7 +384,7 @@ async def warmup():
     )
     return {"status": "warmed up"}
 
-@app.post("/api/detect")
+@app.post("/api/detect", dependencies=[Depends(_require_auth)])
 async def detect_pii(req: PIIRequest):
     text = req.text.strip()
     if not text:
@@ -456,22 +478,24 @@ async def detect_pii(req: PIIRequest):
     }
 
 # ── Store endpoints ───────────────────────────────────────────────────────────
-@app.get("/api/store")
+_auth = [Depends(_require_auth)]
+
+@app.get("/api/store", dependencies=_auth)
 async def get_store():
     return load_store()
 
-@app.get("/api/store/download")
+@app.get("/api/store/download", dependencies=_auth)
 async def download_store():
     if not RESULTS_FILE.exists():
         return JSONResponse(status_code=404, content={"error": "No results yet"})
     return FileResponse(str(RESULTS_FILE), filename="pii_results.json", media_type="application/json")
 
-@app.delete("/api/store")
+@app.delete("/api/store", dependencies=_auth)
 async def clear_store():
     save_store({"runs": [], "meta": {"created": _now(), "total_runs": 0}})
     return {"status": "cleared"}
 
-@app.get("/api/store/stats")
+@app.get("/api/store/stats", dependencies=_auth)
 async def store_stats():
     runs = load_store().get("runs", [])
     if not runs:

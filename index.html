@@ -425,9 +425,47 @@ input[type=range].range-presidio::-webkit-slider-thumb{background:var(--presidio
 ::-webkit-scrollbar{width:5px;height:5px;}
 ::-webkit-scrollbar-track{background:transparent;}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px;}
+
+/* ── AUTH GATE ── */
+.auth-overlay{
+  position:fixed;inset:0;background:rgba(10,20,35,.85);backdrop-filter:blur(8px);
+  display:flex;align-items:center;justify-content:center;z-index:9999;
+}
+.auth-box{
+  background:var(--s1);border:1px solid var(--border2);border-radius:8px;
+  padding:32px 28px;width:340px;display:flex;flex-direction:column;gap:16px;
+  box-shadow:0 20px 60px rgba(0,0,0,.3);
+}
+.auth-title{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text);}
+.auth-sub{font-family:var(--mono);font-size:10px;color:var(--dim);line-height:1.6;}
+.auth-input{
+  background:var(--bg);border:1px solid var(--border);color:var(--text);
+  font-family:var(--mono);font-size:13px;padding:10px 12px;border-radius:4px;
+  outline:none;width:100%;letter-spacing:.05em;
+}
+.auth-input:focus{border-color:var(--yellow);box-shadow:0 0 0 3px rgba(194,135,0,.15);}
+.auth-btn{
+  background:var(--yellow);color:#1a0f00;border:none;font-family:var(--mono);
+  font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+  padding:11px;cursor:pointer;border-radius:4px;transition:all .15s;
+}
+.auth-btn:hover{background:#f0c030;}
+.auth-err{font-family:var(--mono);font-size:10px;color:var(--red);text-align:center;display:none;}
 </style>
 </head>
 <body>
+<!-- \u2500\u2500 AUTH GATE OVERLAY \u2500\u2500 -->
+<div class="auth-overlay" id="authOverlay" style="display:none;">
+  <div class="auth-box">
+    <div class="auth-title">\uD83D\uDD10 PII Shield — Access Required</div>
+    <div class="auth-sub">This demo is password-protected.<br>Enter the passphrase to continue.</div>
+    <input class="auth-input" id="authInput" type="password" placeholder="Passphrase…"
+           onkeydown="if(event.key==='Enter') submitAuth()">
+    <button class="auth-btn" onclick="submitAuth()">Unlock</button>
+    <div class="auth-err" id="authErr">Incorrect passphrase — try again.</div>
+  </div>
+</div>
+
 <div class="shell">
 
 <!-- ── NAV ── -->
@@ -622,6 +660,56 @@ input[type=range].range-presidio::-webkit-slider-thumb{background:var(--presidio
 </div><!-- /shell -->
 
 <script>
+// ── Auth ──────────────────────────────────────────────────────────────────
+let appToken = sessionStorage.getItem('app_token') || '';
+
+function authHeaders() {
+  return appToken ? {'Content-Type':'application/json','X-App-Token': appToken}
+                  : {'Content-Type':'application/json'};
+}
+
+async function initAuth() {
+  // Check if server requires auth
+  const r = await fetch('/api/health');
+  if (r.status === 401) {
+    document.getElementById('authOverlay').style.display = 'flex';
+    document.getElementById('authInput').focus();
+  } else {
+    const d = await r.json();
+    AZURE_OAI_CONFIGURED = d.azure_openai_configured;
+    document.getElementById('storedCount').textContent = d.total_runs_stored || 0;
+    if (!d.azure_openai_configured) {
+      document.getElementById('judgeStatus').textContent = 'NOT CONFIGURED';
+    }
+  }
+}
+
+async function submitAuth() {
+  const passphrase = document.getElementById('authInput').value;
+  const btn = document.querySelector('.auth-btn');
+  btn.textContent = 'Checking…'; btn.disabled = true;
+  try {
+    const r = await fetch('/api/auth', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({passphrase}),
+    });
+    if (r.ok) {
+      const d = await r.json();
+      appToken = d.token || '';
+      sessionStorage.setItem('app_token', appToken);
+      document.getElementById('authOverlay').style.display = 'none';
+      checkHealth();
+    } else {
+      document.getElementById('authErr').style.display = 'block';
+      document.getElementById('authInput').value = '';
+      document.getElementById('authInput').focus();
+    }
+  } finally {
+    btn.textContent = 'Unlock'; btn.disabled = false;
+  }
+}
+
 // ── State ──────────────────────────────────────────────────────────────────
 let currentTab = 'detect';
 let currentResultView = 'results';
@@ -749,7 +837,7 @@ async function runDetection() {
   try {
     const resp = await fetch('/api/detect', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
+      headers: authHeaders(),
       body: JSON.stringify({
         text, tools,
         thresholds: getThresholds(),
@@ -769,7 +857,7 @@ async function runDetection() {
     document.getElementById('wallTime').textContent = `Wall: ${elapsed}s  |  Run #${data.run_id}`;
 
     // Update stored count
-    const h = await fetch('/api/health');
+    const h = await fetch('/api/health', {headers: authHeaders()});
     const hd = await h.json();
     document.getElementById('storedCount').textContent = hd.total_runs_stored || 0;
 
@@ -1006,7 +1094,7 @@ function buildCard(r, metrics) {
 
 // ── History ───────────────────────────────────────────────────────────────
 async function loadHistory() {
-  const resp = await fetch('/api/store');
+  const resp = await fetch('/api/store', {headers: authHeaders()});
   const store = await resp.json();
   const runs  = (store.runs || []).slice().reverse();
   document.getElementById('historyCount').textContent = runs.length;
@@ -1081,19 +1169,26 @@ function toggleDetail(btn, id) {
 }
 
 async function downloadStore() {
-  window.open('/api/store/download', '_blank');
+  // Use fetch so the auth header is sent, then trigger a download via blob
+  const r = await fetch('/api/store/download', {headers: authHeaders()});
+  if (!r.ok) return;
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'pii_results.json'; a.click();
+  URL.revokeObjectURL(url);
 }
 
 async function clearStore() {
   if (!confirm('Clear all stored runs?')) return;
-  await fetch('/api/store', {method:'DELETE'});
+  await fetch('/api/store', {method:'DELETE', headers: authHeaders()});
   document.getElementById('storedCount').textContent = '0';
   loadHistory();
 }
 
 // ── Stats ─────────────────────────────────────────────────────────────────
 async function loadStats() {
-  const resp = await fetch('/api/store/stats');
+  const resp = await fetch('/api/store/stats', {headers: authHeaders()});
   const data = await resp.json();
   const grid = document.getElementById('statsGrid');
 
@@ -1158,7 +1253,8 @@ async function loadStats() {
 let AZURE_OAI_CONFIGURED = false;
 async function checkHealth() {
   try {
-    const r = await fetch('/api/health');
+    const r = await fetch('/api/health', {headers: authHeaders()});
+    if (r.status === 401) { document.getElementById('authOverlay').style.display = 'flex'; return; }
     const d = await r.json();
     AZURE_OAI_CONFIGURED = d.azure_openai_configured;
     document.getElementById('storedCount').textContent = d.total_runs_stored || 0;
@@ -1172,7 +1268,7 @@ async function warmup() {
   const btn = document.querySelector('.warmup-btn');
   btn.textContent = '⏳ Loading…'; btn.disabled = true;
   try {
-    await fetch('/api/warmup');
+    await fetch('/api/warmup', {headers: authHeaders()});
     btn.textContent = '✅ Ready!';
     setTimeout(() => { btn.textContent = '⚡ Warm Up Local Models'; btn.disabled=false; }, 3000);
   } catch {
@@ -1211,7 +1307,7 @@ document.getElementById('inputText').addEventListener('keydown', e => {
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────
-checkHealth();
+initAuth();
 </script>
 </body>
 </html>
