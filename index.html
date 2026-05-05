@@ -668,6 +668,14 @@ function authHeaders() {
                   : {'Content-Type':'application/json'};
 }
 
+function handleUnauth() {
+  appToken = '';
+  sessionStorage.removeItem('app_token');
+  document.getElementById('authOverlay').style.display = 'flex';
+  document.getElementById('authInput').value = '';
+  document.getElementById('authInput').focus();
+}
+
 async function initAuth() {
   // Check if server requires auth
   const r = await fetch('/api/health');
@@ -845,6 +853,7 @@ async function runDetection() {
         enable_judge: judgeEnabled,
       }),
     });
+    if (resp.status === 401) { handleUnauth(); return; }
     const data = await resp.json();
     const elapsed = ((performance.now()-t0)/1000).toFixed(2);
 
@@ -1095,6 +1104,7 @@ function buildCard(r, metrics) {
 // ── History ───────────────────────────────────────────────────────────────
 async function loadHistory() {
   const resp = await fetch('/api/store', {headers: authHeaders()});
+  if (resp.status === 401) { handleUnauth(); return; }
   const store = await resp.json();
   const runs  = (store.runs || []).slice().reverse();
   document.getElementById('historyCount').textContent = runs.length;
@@ -1189,6 +1199,7 @@ async function clearStore() {
 // ── Stats ─────────────────────────────────────────────────────────────────
 async function loadStats() {
   const resp = await fetch('/api/store/stats', {headers: authHeaders()});
+  if (resp.status === 401) { handleUnauth(); return; }
   const data = await resp.json();
   const grid = document.getElementById('statsGrid');
 
